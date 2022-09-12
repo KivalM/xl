@@ -1,17 +1,19 @@
-//! This module implements all the functionality specific to Excel worksheets. This mostly means 
+//! This module implements all the functionality specific to Excel worksheets. This mostly means
 
 use crate::utils;
 
+use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
+use quick_xml::events::Event;
+use quick_xml::Reader;
 use std::borrow::Cow;
 use std::cmp;
 use std::fmt;
 use std::io::BufReader;
+use std::io::Read;
+use std::io::Seek;
 use std::mem;
 use std::ops::Index;
-use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use zip::read::ZipFile;
-use quick_xml::Reader;
-use quick_xml::events::Event;
 // use quick_xml::events::attributes::Attribute;
 use crate::wb::{DateSystem, Workbook};
 
@@ -47,8 +49,14 @@ impl<'a> SheetReader<'a> {
         reader: Reader<BufReader<ZipFile<'a>>>,
         strings: &'a [String],
         styles: &'a [String],
-        date_system: &'a DateSystem) -> SheetReader<'a> {
-        SheetReader { reader, strings, styles, date_system }
+        date_system: &'a DateSystem,
+    ) -> SheetReader<'a> {
+        SheetReader {
+            reader,
+            strings,
+            styles,
+            date_system,
+        }
     }
 }
 
@@ -58,7 +66,10 @@ impl<'a> SheetReader<'a> {
 fn used_area(used_area_range: &str) -> (u32, u16) {
     let mut end: isize = -1;
     for (i, c) in used_area_range.chars().enumerate() {
-        if c == ':' { end = i as isize; break }
+        if c == ':' {
+            end = i as isize;
+            break;
+        }
     }
     if end == -1 {
         (0, 0)
@@ -70,7 +81,7 @@ fn used_area(used_area_range: &str) -> (u32, u16) {
         for (i, c) in end_range[1..].chars().enumerate() {
             if !c.is_ascii_alphabetic() {
                 end = i + 1;
-                break
+                break;
             }
         }
         let col = utils::col2num(&end_range[1..end]).unwrap();
@@ -101,8 +112,20 @@ impl Worksheet {
     ///     let sheets = wb.sheets();
     ///     let ws = sheets.get("Time");
     ///     assert!(ws.is_some());
-    pub fn new(relationship_id: String, name: String, position: u8, target: String, sheet_id: u8) -> Self {
-        Worksheet { name, position, relationship_id, target, sheet_id }
+    pub fn new(
+        relationship_id: String,
+        name: String,
+        position: u8,
+        target: String,
+        sheet_id: u8,
+    ) -> Self {
+        Worksheet {
+            name,
+            position,
+            relationship_id,
+            target,
+            sheet_id,
+        }
     }
 
     /// Obtain a `RowIter` for this worksheet (that is in `workbook`). This is, arguably, the main
@@ -121,7 +144,10 @@ impl Worksheet {
     ///     let row1 = rows.next().unwrap();
     ///     assert_eq!(row1[0].raw_value, "1");
     ///     assert_eq!(row1[1].value, ExcelValue::Number(2f64));
-    pub fn rows<'a>(&self, workbook: &'a mut Workbook) -> RowIter<'a> {
+    pub fn rows<'a, T>(&self, workbook: &'a mut Workbook<T>) -> RowIter<'a>
+    where
+        T: Read + Seek,
+    {
         let reader = workbook.sheet_reader(&self.target);
         RowIter {
             worksheet_reader: reader,
@@ -132,7 +158,6 @@ impl Worksheet {
             done_file: false,
         }
     }
-
 }
 
 /// `ExcelValue` is the enum that holds the equivalent "rust value" of a `Cell`s "raw_value."
@@ -192,7 +217,7 @@ impl Cell<'_> {
             for (i, c) in r.chars().enumerate() {
                 if !c.is_ascii_alphabetic() {
                     end = i;
-                    break
+                    break;
                 }
             }
             (&r[..end], &r[end..])
@@ -218,7 +243,9 @@ impl fmt::Display for Row<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let vec = &self.0;
         for (count, v) in vec.iter().enumerate() {
-            if count != 0 { write!(f, ",")?; }
+            if count != 0 {
+                write!(f, ",")?;
+            }
             write!(f, "{}", v)?;
         }
         write!(f, "")
@@ -281,15 +308,15 @@ impl<'a> Iterator for RowIter<'a> {
                 // the row that was sitting in it.
                 let mut r = None;
                 mem::swap(&mut r, &mut self.next_row);
-                return r
+                return r;
             } else {
                 // otherwise, we must still be sitting behind the row we want. So we return an
                 // empty row to simulate the row that exists in the spreadsheet.
-                return empty_row(self.num_cols, current_row)
+                return empty_row(self.num_cols, current_row);
             }
         } else if self.done_file && self.want_row < self.num_rows as usize {
             self.want_row += 1;
-            return empty_row(self.num_cols, self.want_row - 1)
+            return empty_row(self.num_cols, self.want_row - 1);
         }
         let mut buf = Vec::new();
         let reader = &mut self.worksheet_reader.reader;
@@ -313,38 +340,37 @@ impl<'a> Iterator for RowIter<'a> {
                                 self.num_rows = rows;
                             }
                         }
-                    },
+                    }
                     /* -- end search for used area */
                     Ok(Event::Start(ref e)) if e.name() == b"row" => {
                         this_row = utils::get(e.attributes(), b"r").unwrap().parse().unwrap();
-                    },
+                    }
                     Ok(Event::Start(ref e)) if e.name() == b"c" => {
                         in_cell = true;
-                        e.attributes()
-                            .for_each(|a| {
-                                let a = a.unwrap();
-                                if a.key == b"r" {
-                                    c.reference = utils::attr_value(&a);
-                                }
-                                if a.key == b"t" {
-                                    c.cell_type = utils::attr_value(&a);
-                                }
-                                if a.key == b"s" {
-                                    if let Ok(num) = utils::attr_value(&a).parse::<usize>() {
-                                        if let Some(style) = styles.get(num) {
-                                            c.style = style.to_string();
-                                        }
+                        e.attributes().for_each(|a| {
+                            let a = a.unwrap();
+                            if a.key == b"r" {
+                                c.reference = utils::attr_value(&a);
+                            }
+                            if a.key == b"t" {
+                                c.cell_type = utils::attr_value(&a);
+                            }
+                            if a.key == b"s" {
+                                if let Ok(num) = utils::attr_value(&a).parse::<usize>() {
+                                    if let Some(style) = styles.get(num) {
+                                        c.style = style.to_string();
                                     }
                                 }
-                            });
-                    },
+                            }
+                        });
+                    }
                     Ok(Event::Start(ref e)) if e.name() == b"v" || e.name() == b"t" => {
                         in_value = true;
-                    },
+                    }
                     // note: because v elements are children of c elements,
                     // need this check to go before the 'in_cell' check
                     Ok(Event::Text(ref e)) if in_value => {
-                        c.raw_value = e.unescape_and_decode(&reader).unwrap();
+                        c.raw_value = e.unescape_and_decode(reader).unwrap();
                         c.value = match &c.cell_type[..] {
                             "s" => {
                                 if let Ok(pos) = c.raw_value.parse::<usize>() {
@@ -353,46 +379,50 @@ impl<'a> Iterator for RowIter<'a> {
                                 } else {
                                     ExcelValue::String(Cow::Owned(c.raw_value.clone()))
                                 }
-                            },
+                            }
                             "str" | "inlineStr" => {
                                 ExcelValue::String(Cow::Owned(c.raw_value.clone()))
-                            },
+                            }
                             "b" => {
                                 if c.raw_value == "0" {
                                     ExcelValue::Bool(false)
                                 } else {
                                     ExcelValue::Bool(true)
                                 }
-                            },
+                            }
                             "bl" => ExcelValue::None,
                             "e" => ExcelValue::Error(c.raw_value.to_string()),
                             _ if is_date(&c) => {
                                 let num = c.raw_value.parse::<f64>().unwrap();
                                 match utils::excel_number_to_date(num, date_system) {
                                     utils::DateConversion::Date(date) => ExcelValue::Date(date),
-                                    utils::DateConversion::DateTime(date) => ExcelValue::DateTime(date),
+                                    utils::DateConversion::DateTime(date) => {
+                                        ExcelValue::DateTime(date)
+                                    }
                                     utils::DateConversion::Time(time) => ExcelValue::Time(time),
-                                    utils::DateConversion::Number(num) => ExcelValue::Number(num as f64),
+                                    utils::DateConversion::Number(num) => {
+                                        ExcelValue::Number(num as f64)
+                                    }
                                 }
-                                
-                            },
+                            }
                             _ => ExcelValue::Number(c.raw_value.parse::<f64>().unwrap()),
                         };
-                    },
+                    }
                     Ok(Event::Text(ref e)) if in_cell => {
-                        let txt = e.unescape_and_decode(&reader).unwrap();
+                        let txt = e.unescape_and_decode(reader).unwrap();
                         c.formula.push_str(&txt)
-                    },
+                    }
                     Ok(Event::End(ref e)) if e.name() == b"v" || e.name() == b"t" => {
                         in_value = false;
-                    },
+                    }
                     Ok(Event::End(ref e)) if e.name() == b"c" => {
                         if let Some(prev) = row.last() {
                             let (mut last_col, _) = prev.coordinates();
                             let (this_col, this_row) = c.coordinates();
                             while this_col > last_col + 1 {
                                 let mut cell = new_cell();
-                                cell.reference.push_str(&utils::num2col(last_col + 1).unwrap());
+                                cell.reference
+                                    .push_str(&utils::num2col(last_col + 1).unwrap());
                                 cell.reference.push_str(&this_row.to_string());
                                 row.push(cell);
                                 last_col += 1;
@@ -410,23 +440,24 @@ impl<'a> Iterator for RowIter<'a> {
                         }
                         c = new_cell();
                         in_cell = false;
-                    },
+                    }
                     Ok(Event::End(ref e)) if e.name() == b"row" => {
                         self.num_cols = cmp::max(self.num_cols, row.len() as u16);
                         while row.len() < self.num_cols as usize {
                             let mut cell = new_cell();
-                            cell.reference.push_str(&utils::num2col(row.len() as u16 + 1).unwrap());
+                            cell.reference
+                                .push_str(&utils::num2col(row.len() as u16 + 1).unwrap());
                             cell.reference.push_str(&this_row.to_string());
                             row.push(cell);
                         }
                         let next_row = Some(Row(row, this_row));
                         if this_row == self.want_row {
-                            break next_row
+                            break next_row;
                         } else {
                             self.next_row = next_row;
-                            break empty_row(self.num_cols, self.want_row)
+                            break empty_row(self.num_cols, self.want_row);
                         }
-                    },
+                    }
                     Ok(Event::Eof) => break None,
                     Err(e) => panic!("Error at position {}: {:?}", reader.buffer_position(), e),
                     _ => (),
@@ -457,11 +488,18 @@ fn is_date(cell: &Cell) -> bool {
 #[cfg(test)]
 mod tests {
     use crate::{ExcelValue, Workbook};
-    use std::borrow::Cow;
+    use std::{
+        borrow::Cow,
+        fs,
+        io::{Cursor, Read},
+    };
 
     #[test]
     fn test_ups() {
-        let mut wb = Workbook::open("./tests/data/UPS.Galaxy.VS.PX.xlsx").unwrap();
+        let mut file = fs::File::open("./tests/data/UPS.Galaxy.VS.PX.xlsx").unwrap();
+        let mut buff = vec![];
+        file.read_to_end(&mut buff).unwrap();
+        let mut wb = Workbook::new(Cursor::new(buff)).unwrap();
         let sheets = wb.sheets();
         let ws = sheets.get("Table001 (Page 1-19)").unwrap();
         let mut row_iter = ws.rows(&mut wb);

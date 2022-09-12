@@ -28,14 +28,14 @@
 //!         let sheet = sheets.get("Sheet1");
 //!     }
 
+mod utils;
 mod wb;
 mod ws;
-mod utils;
 
 use std::fmt;
-pub use wb::Workbook;
-pub use ws::{Worksheet, ExcelValue};
 pub use utils::{col2num, excel_number_to_date, num2col};
+pub use wb::Workbook;
+pub use ws::{ExcelValue, Worksheet};
 
 enum SheetNameOrNum {
     Name(String),
@@ -64,8 +64,15 @@ pub enum ConfigError<'a> {
 impl<'a> fmt::Display for ConfigError<'a> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            ConfigError::NeedPathAndTab(exe) => write!(f, "need to provide path and tab when running '{}'. See usage below.", exe),
-            ConfigError::NeedTab => write!(f, "must also provide which tab you want to view in workbook"),
+            ConfigError::NeedPathAndTab(exe) => write!(
+                f,
+                "need to provide path and tab when running '{}'. See usage below.",
+                exe
+            ),
+            ConfigError::NeedTab => write!(
+                f,
+                "must also provide which tab you want to view in workbook"
+            ),
             ConfigError::RowsMustBeInt => write!(f, "number of rows must be an integer value"),
             ConfigError::NeedNumRows => write!(f, "must provide number of rows when using -n"),
             ConfigError::UnknownFlag(flag) => write!(f, "unknown flag: {}", flag),
@@ -76,7 +83,7 @@ impl<'a> fmt::Display for ConfigError<'a> {
 impl Config {
     pub fn new(args: &[String]) -> Result<Config, ConfigError> {
         if args.len() < 2 {
-            return Err(ConfigError::NeedPathAndTab(&args[0]))
+            return Err(ConfigError::NeedPathAndTab(&args[0]));
         } else if args.len() < 3 {
             return match args[1].as_ref() {
                 "-h" | "--help" => Ok(Config {
@@ -85,15 +92,20 @@ impl Config {
                     nrows: None,
                     want_help: true,
                 }),
-                _ => Err(ConfigError::NeedTab)
-            }
+                _ => Err(ConfigError::NeedTab),
+            };
         }
         let workbook_path = args[1].clone();
         let tab = match args[2].parse::<usize>() {
             Ok(num) => SheetNameOrNum::Num(num),
-            Err(_) => SheetNameOrNum::Name(args[2].clone())
+            Err(_) => SheetNameOrNum::Name(args[2].clone()),
         };
-        let mut config = Config { workbook_path, tab, nrows: None, want_help: false };
+        let mut config = Config {
+            workbook_path,
+            tab,
+            nrows: None,
+            want_help: false,
+        };
         let mut iter = args[3..].iter();
         while let Some(flag) = iter.next() {
             let flag = &flag[..];
@@ -103,12 +115,12 @@ impl Config {
                         if let Ok(nrows) = nrows.parse::<u32>() {
                             config.nrows = Some(nrows)
                         } else {
-                            return Err(ConfigError::RowsMustBeInt)
+                            return Err(ConfigError::RowsMustBeInt);
                         }
                     } else {
-                        return Err(ConfigError::NeedNumRows)
+                        return Err(ConfigError::NeedNumRows);
                     }
-                },
+                }
                 _ => return Err(ConfigError::UnknownFlag(flag)),
             }
         }
@@ -121,28 +133,25 @@ pub fn run(config: Config) -> Result<(), String> {
         usage();
         std::process::exit(0);
     }
-    match crate::Workbook::new(&config.workbook_path) {
-        Ok(mut wb) => {
-            let sheets = wb.sheets();
-            let sheet = match config.tab {
-                SheetNameOrNum::Name(n) => sheets.get(&*n),
-                SheetNameOrNum::Num(n) => sheets.get(n),
-            };
-            if let Some(ws) = sheet {
-                let nrows = if let Some(nrows) = config.nrows {
-                    nrows as usize
-                } else {
-                    1048576 // max number of rows in an Excel worksheet
-                };
-                for row in ws.rows(&mut wb).take(nrows) {
-                    println!("{}", row);
-                }
-            } else {
-                return Err("that sheet does not exist".to_owned())
-            }
-            Ok(())
-        },
-        Err(e) => Err(e)
+    let mut wb = crate::Workbook::open(&config.workbook_path).unwrap();
+
+    let sheets = wb.sheets();
+    let sheet = match config.tab {
+        SheetNameOrNum::Name(n) => sheets.get(&*n),
+        SheetNameOrNum::Num(n) => sheets.get(n),
+    };
+    if let Some(ws) = sheet {
+        let nrows = if let Some(nrows) = config.nrows {
+            nrows as usize
+        } else {
+            1048576 // max number of rows in an Excel worksheet
+        };
+        for row in ws.rows(&mut wb).take(nrows) {
+            println!("{}", row);
+        }
+        Ok(())
+    } else {
+        Err("that sheet does not exist".to_owned())
     }
 }
 
