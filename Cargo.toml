@@ -7,9 +7,13 @@ description = "A package to let you process *big* Excel files very quickly"
 repository = "https://github.com/xlprotips/xl/"
 
 [dependencies]
-zip = "0.5.13"
 quick-xml = "0.22.0"
 chrono = "0.4"
+log = "*"
+[dependencies.zip]
+version = "0.6.2"
+default-features = false
+features = ["deflate"]
 
 [lib]
 name = "xl"

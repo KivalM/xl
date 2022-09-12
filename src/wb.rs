@@ -3,6 +3,7 @@
 
 use crate::utils;
 use crate::ws::{SheetReader, Worksheet};
+use log::info;
 use quick_xml::events::Event;
 use quick_xml::Reader;
 use std::collections::HashMap;
@@ -347,6 +348,7 @@ where
                 let strings = strings(&mut xls);
                 let styles = find_styles(&mut xls);
                 let date_system = get_date_system(&mut xls);
+                println!("date_system: {:?}", date_system);
                 Ok(Workbook {
                     xls,
                     encoding: String::from("utf8"),
@@ -543,6 +545,9 @@ fn get_date_system<T>(xlsx: &mut ZipArchive<T>) -> DateSystem
 where
     T: Read + Seek,
 {
+    let names = xlsx.file_names().collect::<Vec<&str>>();
+    info!("{:?}", names);
+
     match xlsx.by_name("xl/workbook.xml") {
         Ok(wb) => {
             let reader = BufReader::new(wb);
@@ -575,6 +580,8 @@ impl Workbook<Cursor<Vec<u8>>> {
         let mut file = fs::File::open(path).unwrap();
         let mut buff = vec![];
         file.read_to_end(&mut buff).unwrap();
+        println!("Opened file: {}", path);
+        println!("File size: {} KB", buff.len() / 1024);
         let inner = Cursor::new(buff);
         Workbook::new(inner)
     }
