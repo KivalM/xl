@@ -58,7 +58,11 @@ You should be able to use the library as follows:
 use xl::Workbook;
 
 fn main () {
-    let mut wb = xl::Workbook::open("tests/data/Book1.xlsx").unwrap();
+    let mut file = fs::File::open(path).unwrap();
+    let mut buff = vec![];
+    file.read_to_end(&mut buff).unwrap();
+    let inner = Cursor::new(buff);
+    Workbook::new(inner)
     let sheets = wb.sheets();
     let sheet = sheets.get("Sheet1");
     for row in sheet.rows(&mut wb).take(5) {
