@@ -159,6 +159,31 @@ impl Worksheet {
         }
     }
 
+    /*
+     * ```rust
+     * impl Cell<'_> {
+        /// return the row/column coordinates of the current cell
+        pub fn coordinates(&self) -> (u16, u32) {
+            // let (col, row) = split_cell_reference(&self.reference);
+            let (col, row) = {
+                let r = &self.reference;
+                let mut end = 0;
+                for (i, c) in r.chars().enumerate() {
+                    if !c.is_ascii_alphabetic() {
+                        end = i;
+                        break
+                    }
+                }
+                (&r[..end], &r[end..])
+            };
+            let col = utils::col2num(col).unwrap();
+            let row = row.parse().unwrap();
+            (col, row)
+        }
+    }
+    ```
+     */
+
     /// # Summary
     /// The `read_to_buffer` function reads the contents of a worksheet within a workbook and returns it as a vector of bytes.
     ///
@@ -174,20 +199,47 @@ impl Worksheet {
     where
         T: Read + Seek,
     {
+        let mut out_bytes: Vec<u8> = vec![];
+        /*
+        // Use this iterator to safely get the headers of the spreadsheet
+        let mut row_iter = RowIter {
+            worksheet_reader: workbook.sheet_reader(&self.target),
+            want_row: 1,
+            next_row: None,
+            num_cols: 0,
+            num_rows: 0,
+            done_file: false,
+        };
+
+        let mut out_bytes: Vec<u8> = vec![];
+        let headers = row_iter.next();
+
+        for h in headers {
+            out_bytes.append(&mut h.to_string().into_bytes());
+            out_bytes.push(b',');
+        }
+
+        /* Remove the trailing ',' */
+        out_bytes.pop();
+        out_bytes.push(b'\n');
+        println!("{:?}", String::from_utf8(out_bytes.clone()));
+        */
         let mut sheet_reader = workbook.sheet_reader(&self.target);
+        //let mut sheet_reader = row_iter.worksheet_reader;
         let reader = &mut sheet_reader.reader;
 
         // the xml in the xlsx file will not contain elements for empty rows. So
         // we need to "simulate" the empty rows since the user expects to see
         // them when they iterate over the worksheet.
         let mut buf = Vec::new();
-        let mut out_bytes: Vec<u8> = vec![];
         let strings = sheet_reader.strings;
         let mut in_value = false;
         let mut cell_type = "".to_string();
 
+//        let mut is_first_line = true;
+
         // this maintains a 2d vector of the data in the worksheet range
-        let mut is_start_row = false;
+        let mut is_start_row = true;
 
         loop {
             let event = reader.read_event(&mut buf);
@@ -209,10 +261,12 @@ impl Worksheet {
                     } else {
                         is_start_row = false;
                     }
+
                     match &cell_type[..] {
                         "s" => {
                             if let Ok(pos) = e.unescape_and_decode(reader).unwrap().parse::<usize>()
                             {
+                                println!(">>>>>>>>>>>>>>>>>>>>>>>>>>>>{:?}", String::from_utf8(strings[pos].clone().into_bytes()));
                                 out_bytes.append(&mut strings[pos].clone().into_bytes());
                             } else {
                                 out_bytes.append(&mut e.to_vec());
@@ -226,6 +280,7 @@ impl Worksheet {
                         }
                     };
                 }
+                /* Matching start of cell */
                 Ok(Event::Start(ref e)) if e.name() == b"c" => e.attributes().for_each(|a| {
                     let a = a.unwrap();
                     if a.key == b"t" {
@@ -236,6 +291,7 @@ impl Worksheet {
                     in_value = false;
                 }
                 Ok(Event::End(ref e)) if e.name() == b"row" => {
+ //                   is_first_line = false;
                     out_bytes.push(b'\n');
                     is_start_row = true;
                 }
@@ -596,5 +652,21 @@ mod tests {
         assert_eq!(row2[3].value, ExcelValue::Number(0.0));
         let row3 = row_iter.next().unwrap();
         assert_eq!(row3[4].value, ExcelValue::String(Cow::Borrowed("Bit")));
+        println!("{:?}", row_iter.count())
+    }
+
+    #[test]
+    fn byte_me() {
+        let mut file = fs::File::open("./tests/data/UPS.Galaxy.VS.PX.xlsx").unwrap();
+        //let mut file = fs::File::open("./tests/data/69.xlsx").unwrap();
+        let mut buff = vec![];
+        file.read_to_end(&mut buff).unwrap();
+        let mut wb = Workbook::new(Cursor::new(buff)).unwrap();
+        let sheets = wb.sheets();
+        //let ws = sheets.get(1).unwrap();
+        let ws = sheets.get(1).unwrap();
+        let byte_me = ws.read_to_buffer(&mut wb);
+
+        println!("{:?}", String::from_utf8(byte_me));
     }
 }
