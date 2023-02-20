@@ -176,15 +176,16 @@ impl Worksheet {
     {
         let mut sheet_reader = workbook.sheet_reader(&self.target);
         let reader = &mut sheet_reader.reader;
+
         // the xml in the xlsx file will not contain elements for empty rows. So
         // we need to "simulate" the empty rows since the user expects to see
         // them when they iterate over the worksheet.
         let mut buf = Vec::new();
         let mut out_bytes: Vec<u8> = vec![];
         let strings = sheet_reader.strings;
-        // let mut row: Vec<String> = Vec::with_capacity(3000000 as usize);
         let mut in_value = false;
         let mut cell_type = "".to_string();
+
         // this maintains a 2d vector of the data in the worksheet range
         let mut is_start_row = false;
 
@@ -213,7 +214,6 @@ impl Worksheet {
                             if let Ok(pos) = e.unescape_and_decode(reader).unwrap().parse::<usize>()
                             {
                                 out_bytes.append(&mut strings[pos].clone().into_bytes());
-                            // .to_string()
                             } else {
                                 out_bytes.append(&mut e.to_vec());
                             }
