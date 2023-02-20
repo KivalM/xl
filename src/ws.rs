@@ -235,6 +235,11 @@ impl Worksheet {
         let strings = sheet_reader.strings;
         let mut in_value = false;
         let mut cell_type = "".to_string();
+        let mut col = 0;
+        let mut row = 0;
+        let mut pushed = 0;
+        let mut num_cols = 0;
+        let mut num_rows = 0;
 
 //        let mut is_first_line = true;
 
@@ -245,8 +250,17 @@ impl Worksheet {
             let event = reader.read_event(&mut buf);
 
             match event {
+                /* may be able to get a better estimate for the used area */
+                Ok(Event::Empty(ref e)) if e.name() == b"dimension" => {
+                    if let Some(used_area_range) = utils::get(e.attributes(), b"ref") {
+                        println!("here");
+                        (num_rows, num_cols) = used_area(&used_area_range);
+                        println!("num_cols is {:?}", num_cols);
+                    }
+                }
                 Ok(Event::Start(ref e)) if e.name() == b"row" => {
                     is_start_row = true;
+                    col = 0;
                 }
                 /* -- end search for used area */
                 Ok(Event::Start(ref e)) if e.name() == b"v" || e.name() == b"t" => {
@@ -261,12 +275,10 @@ impl Worksheet {
                     } else {
                         is_start_row = false;
                     }
-
                     match &cell_type[..] {
                         "s" => {
                             if let Ok(pos) = e.unescape_and_decode(reader).unwrap().parse::<usize>()
                             {
-                                println!(">>>>>>>>>>>>>>>>>>>>>>>>>>>>{:?}", String::from_utf8(strings[pos].clone().into_bytes()));
                                 out_bytes.append(&mut strings[pos].clone().into_bytes());
                             } else {
                                 out_bytes.append(&mut e.to_vec());
@@ -279,21 +291,49 @@ impl Worksheet {
                             out_bytes.append(&mut e.to_vec());
                         }
                     };
+                    pushed += 1;
                 }
                 /* Matching start of cell */
-                Ok(Event::Start(ref e)) if e.name() == b"c" => e.attributes().for_each(|a| {
-                    let a = a.unwrap();
-                    if a.key == b"t" {
-                        cell_type = utils::attr_value(&a);
-                    }
-                }),
+                Ok(Event::Start(ref e)) if e.name() == b"c" => { 
+                    e.attributes().for_each(|a| {
+                        let a = a.unwrap();
+                        if a.key == b"t" {
+                            cell_type = utils::attr_value(&a);
+                        } else if a.key == b"r" {
+                            let reference = utils::attr_value(&a);
+                            let (new_col, row) = coordinates(reference);
+                            println!("The col and row are {:?},{:?}", new_col, row);
+                            let diff = new_col - col - 1;
+                            println!("The diff is {:?}", diff);
+                            for _ in 0..diff {
+                                println!("pushing");
+                                out_bytes.push(b',');
+                                pushed +=1;
+                            }
+                            println!("done");
+                            col = new_col;
+                        } 
+                    })
+                }
+                Ok(Event::End(ref e)) if e.name() == b"c" => {
+                    cell_type = "nono".to_string();
+                }
                 Ok(Event::End(ref e)) if e.name() == b"v" || e.name() == b"t" => {
                     in_value = false;
                 }
                 Ok(Event::End(ref e)) if e.name() == b"row" => {
  //                   is_first_line = false;
+ //                  
+                    println!("Pushed: {:?}", pushed);
+                    println!("Num cols: {:?}", num_cols);
+                    if pushed <= num_cols {
+                        for _ in pushed..num_cols {
+                            out_bytes.push(b',');
+                        }
+                    }
                     out_bytes.push(b'\n');
                     is_start_row = true;
+                    pushed = 0;
                 }
                 Ok(Event::Eof) => break,
                 Err(e) => panic!("Error at position {}: {:?}", reader.buffer_position(), e),
@@ -371,6 +411,23 @@ impl Cell<'_> {
         let row = row.parse().unwrap();
         (col, row)
     }
+}
+
+pub fn coordinates(r: String) -> (u16, u32) {
+    // let (col, row) = split_cell_reference(&self.reference);
+    let (col, row) = {
+        let mut end = 0;
+        for (i, c) in r.chars().enumerate() {
+            if !c.is_ascii_alphabetic() {
+                end = i;
+                break;
+            }
+        }
+        (&r[..end], &r[end..])
+    };
+    let col = utils::col2num(col).unwrap();
+    let row = row.parse().unwrap();
+    (col, row)
 }
 
 #[derive(Debug)]
@@ -657,7 +714,7 @@ mod tests {
 
     #[test]
     fn byte_me() {
-        let mut file = fs::File::open("./tests/data/UPS.Galaxy.VS.PX.xlsx").unwrap();
+        let mut file = fs::File::open("./tests/data/6_rows.xlsx").unwrap();
         //let mut file = fs::File::open("./tests/data/69.xlsx").unwrap();
         let mut buff = vec![];
         file.read_to_end(&mut buff).unwrap();
