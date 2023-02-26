@@ -200,32 +200,7 @@ impl Worksheet {
         T: Read + Seek,
     {
         let mut out_bytes: Vec<u8> = vec![];
-        /*
-        // Use this iterator to safely get the headers of the spreadsheet
-        let mut row_iter = RowIter {
-            worksheet_reader: workbook.sheet_reader(&self.target),
-            want_row: 1,
-            next_row: None,
-            num_cols: 0,
-            num_rows: 0,
-            done_file: false,
-        };
-
-        let mut out_bytes: Vec<u8> = vec![];
-        let headers = row_iter.next();
-
-        for h in headers {
-            out_bytes.append(&mut h.to_string().into_bytes());
-            out_bytes.push(b',');
-        }
-
-        /* Remove the trailing ',' */
-        out_bytes.pop();
-        out_bytes.push(b'\n');
-        println!("{:?}", String::from_utf8(out_bytes.clone()));
-        */
         let mut sheet_reader = workbook.sheet_reader(&self.target);
-        //let mut sheet_reader = row_iter.worksheet_reader;
         let reader = &mut sheet_reader.reader;
 
         // the xml in the xlsx file will not contain elements for empty rows. So
@@ -236,14 +211,8 @@ impl Worksheet {
         let mut in_value = false;
         let mut cell_type = "".to_string();
         let mut col = 0;
-        let mut row = 0;
         let mut pushed = 0;
         let mut num_cols = 0;
-        let mut num_rows = 0;
-
-//        let mut is_first_line = true;
-
-        // this maintains a 2d vector of the data in the worksheet range
         let mut is_start_row = true;
 
         loop {
@@ -253,9 +222,7 @@ impl Worksheet {
                 /* may be able to get a better estimate for the used area */
                 Ok(Event::Empty(ref e)) if e.name() == b"dimension" => {
                     if let Some(used_area_range) = utils::get(e.attributes(), b"ref") {
-                        println!("here");
-                        (num_rows, num_cols) = used_area(&used_area_range);
-                        println!("num_cols is {:?}", num_cols);
+                        (_, num_cols) = used_area(&used_area_range);
                     }
                 }
                 Ok(Event::Start(ref e)) if e.name() == b"row" => {
@@ -269,12 +236,6 @@ impl Worksheet {
                 // note: because v elements are children of c elements,
                 // need this check to go before the 'in_cell' check
                 Ok(Event::Text(ref e)) if in_value => {
-                    // Only add a comma if it isnt the first row
-                    if !is_start_row {
-                        out_bytes.push(b',');
-                    } else {
-                        is_start_row = false;
-                    }
                     match &cell_type[..] {
                         "s" => {
                             if let Ok(pos) = e.unescape_and_decode(reader).unwrap().parse::<usize>()
@@ -291,29 +252,32 @@ impl Worksheet {
                             out_bytes.append(&mut e.to_vec());
                         }
                     };
-                    pushed += 1;
                 }
                 /* Matching start of cell */
-                Ok(Event::Start(ref e)) if e.name() == b"c" => { 
+                Ok(Event::Start(ref e)) if e.name() == b"c" => {
                     e.attributes().for_each(|a| {
                         let a = a.unwrap();
                         if a.key == b"t" {
                             cell_type = utils::attr_value(&a);
                         } else if a.key == b"r" {
                             let reference = utils::attr_value(&a);
-                            let (new_col, row) = coordinates(reference);
-                            println!("The col and row are {:?},{:?}", new_col, row);
+                            let (new_col, _row) = coordinates(reference);
                             let diff = new_col - col - 1;
-                            println!("The diff is {:?}", diff);
+
                             for _ in 0..diff {
-                                println!("pushing");
                                 out_bytes.push(b',');
-                                pushed +=1;
+                                pushed += 1;
                             }
-                            println!("done");
                             col = new_col;
-                        } 
-                    })
+                        }
+                    });
+                    // Only add a comma if it isnt the first row
+                    if !is_start_row {
+                        out_bytes.push(b',');
+                        pushed += 1;
+                    } else {
+                        is_start_row = false;
+                    }
                 }
                 Ok(Event::End(ref e)) if e.name() == b"c" => {
                     cell_type = "nono".to_string();
@@ -322,12 +286,8 @@ impl Worksheet {
                     in_value = false;
                 }
                 Ok(Event::End(ref e)) if e.name() == b"row" => {
- //                   is_first_line = false;
- //                  
-                    println!("Pushed: {:?}", pushed);
-                    println!("Num cols: {:?}", num_cols);
                     if pushed <= num_cols {
-                        for _ in pushed..num_cols {
+                        for _ in pushed..(num_cols - 1) {
                             out_bytes.push(b',');
                         }
                     }
@@ -713,17 +673,19 @@ mod tests {
     }
 
     #[test]
-    fn byte_me() {
-        let mut file = fs::File::open("./tests/data/6_rows.xlsx").unwrap();
-        //let mut file = fs::File::open("./tests/data/69.xlsx").unwrap();
+    fn test_read_to_buffer() {
+        /* This spreadsheet has a combination of null values and missing cells to put the method
+         * through its paces */
+        let mut file = fs::File::open("./tests/data/7_nulls.xlsx").unwrap();
         let mut buff = vec![];
         file.read_to_end(&mut buff).unwrap();
         let mut wb = Workbook::new(Cursor::new(buff)).unwrap();
         let sheets = wb.sheets();
-        //let ws = sheets.get(1).unwrap();
         let ws = sheets.get(1).unwrap();
-        let byte_me = ws.read_to_buffer(&mut wb);
+        let byte_buffer = ws.read_to_buffer(&mut wb);
+        let byte_buffer_as_string = String::from_utf8(byte_buffer).unwrap();
+        let expected = ",0,1,2,3,4\n0,foo,0.4664743800292485,,0.9373419333844548,0.3870971408372121\n1,,0.6363620246706366,baz,foo,0.4664743800292485\n2,,0.08179075658393076,bar,,0.6363620246706366\n3,,0.9373419333844548,0.3870971408372121,,0.08179075658393076\n,baz,foo,0.4664743800292485,,0.9373419333844548\n5,bar,,0.6363620246706366,baz,foo\n6,0.3870971408372121,,0.08179075658393076,bar,\n";
 
-        println!("{:?}", String::from_utf8(byte_me));
+        assert_eq!(byte_buffer_as_string, expected);
     }
 }
