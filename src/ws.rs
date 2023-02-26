@@ -159,31 +159,6 @@ impl Worksheet {
         }
     }
 
-    /*
-     * ```rust
-     * impl Cell<'_> {
-        /// return the row/column coordinates of the current cell
-        pub fn coordinates(&self) -> (u16, u32) {
-            // let (col, row) = split_cell_reference(&self.reference);
-            let (col, row) = {
-                let r = &self.reference;
-                let mut end = 0;
-                for (i, c) in r.chars().enumerate() {
-                    if !c.is_ascii_alphabetic() {
-                        end = i;
-                        break
-                    }
-                }
-                (&r[..end], &r[end..])
-            };
-            let col = utils::col2num(col).unwrap();
-            let row = row.parse().unwrap();
-            (col, row)
-        }
-    }
-    ```
-     */
-
     /// # Summary
     /// The `read_to_buffer` function reads the contents of a worksheet within a workbook and returns it as a vector of bytes.
     ///
@@ -669,7 +644,6 @@ mod tests {
         assert_eq!(row2[3].value, ExcelValue::Number(0.0));
         let row3 = row_iter.next().unwrap();
         assert_eq!(row3[4].value, ExcelValue::String(Cow::Borrowed("Bit")));
-        println!("{:?}", row_iter.count())
     }
 
     #[test]
