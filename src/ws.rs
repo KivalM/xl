@@ -158,6 +158,126 @@ impl Worksheet {
             done_file: false,
         }
     }
+
+    /// # Summary
+    /// The `read_to_buffer` function reads the contents of a worksheet within a workbook and returns it as a vector of bytes.
+    ///
+    /// # Returns
+    /// A vector of bytes that represent the contents of the worksheet.
+    ///
+    /// # Example
+    /// ```
+    /// let mut workbook = Workbook::open("example.xlsx").unwrap();
+    /// let data = workbook.read_to_buffer(&mut workbook);
+    /// ```
+    pub fn read_to_buffer<'a, T>(&self, workbook: &'a mut Workbook<T>) -> Vec<u8>
+    where
+        T: Read + Seek,
+    {
+        let mut out_bytes: Vec<u8> = vec![];
+        let mut sheet_reader = workbook.sheet_reader(&self.target);
+        let reader = &mut sheet_reader.reader;
+
+        // the xml in the xlsx file will not contain elements for empty rows. So
+        // we need to "simulate" the empty rows since the user expects to see
+        // them when they iterate over the worksheet.
+        let mut buf = Vec::new();
+        let strings = sheet_reader.strings;
+        let mut in_value = false;
+        let mut cell_type = "".to_string();
+        let mut col = 0;
+        let mut pushed = 0;
+        let mut num_cols = 0;
+        let mut is_start_row = true;
+
+        loop {
+            let event = reader.read_event(&mut buf);
+
+            match event {
+                /* may be able to get a better estimate for the used area */
+                Ok(Event::Empty(ref e)) if e.name() == b"dimension" => {
+                    if let Some(used_area_range) = utils::get(e.attributes(), b"ref") {
+                        (_, num_cols) = used_area(&used_area_range);
+                    }
+                }
+                Ok(Event::Start(ref e)) if e.name() == b"row" => {
+                    is_start_row = true;
+                    col = 0;
+                }
+                /* -- end search for used area */
+                Ok(Event::Start(ref e)) if e.name() == b"v" || e.name() == b"t" => {
+                    in_value = true;
+                }
+                // note: because v elements are children of c elements,
+                // need this check to go before the 'in_cell' check
+                Ok(Event::Text(ref e)) if in_value => {
+                    match &cell_type[..] {
+                        "s" => {
+                            if let Ok(pos) = e.unescape_and_decode(reader).unwrap().parse::<usize>()
+                            {
+                                out_bytes.append(&mut strings[pos].clone().into_bytes());
+                            } else {
+                                out_bytes.append(&mut e.to_vec());
+                            }
+                        }
+                        "str" | "inlineStr" => {
+                            out_bytes.append(&mut e.to_vec());
+                        }
+                        _ => {
+                            out_bytes.append(&mut e.to_vec());
+                        }
+                    };
+                }
+                /* Matching start of cell */
+                Ok(Event::Start(ref e)) if e.name() == b"c" => {
+                    e.attributes().for_each(|a| {
+                        let a = a.unwrap();
+                        if a.key == b"t" {
+                            cell_type = utils::attr_value(&a);
+                        } else if a.key == b"r" {
+                            let reference = utils::attr_value(&a);
+                            let (new_col, _row) = coordinates(reference);
+                            let diff = new_col - col - 1;
+
+                            for _ in 0..diff {
+                                out_bytes.push(b',');
+                                pushed += 1;
+                            }
+                            col = new_col;
+                        }
+                    });
+                    // Only add a comma if it isnt the first row
+                    if !is_start_row {
+                        out_bytes.push(b',');
+                        pushed += 1;
+                    } else {
+                        is_start_row = false;
+                    }
+                }
+                Ok(Event::End(ref e)) if e.name() == b"c" => {
+                    cell_type = "nono".to_string();
+                }
+                Ok(Event::End(ref e)) if e.name() == b"v" || e.name() == b"t" => {
+                    in_value = false;
+                }
+                Ok(Event::End(ref e)) if e.name() == b"row" => {
+                    if pushed <= num_cols {
+                        for _ in pushed..(num_cols - 1) {
+                            out_bytes.push(b',');
+                        }
+                    }
+                    out_bytes.push(b'\n');
+                    is_start_row = true;
+                    pushed = 0;
+                }
+                Ok(Event::Eof) => break,
+                Err(e) => panic!("Error at position {}: {:?}", reader.buffer_position(), e),
+                _ => (),
+            }
+            buf.clear();
+        }
+        return out_bytes;
+    }
 }
 
 /// `ExcelValue` is the enum that holds the equivalent "rust value" of a `Cell`s "raw_value."
@@ -226,6 +346,23 @@ impl Cell<'_> {
         let row = row.parse().unwrap();
         (col, row)
     }
+}
+
+pub fn coordinates(r: String) -> (u16, u32) {
+    // let (col, row) = split_cell_reference(&self.reference);
+    let (col, row) = {
+        let mut end = 0;
+        for (i, c) in r.chars().enumerate() {
+            if !c.is_ascii_alphabetic() {
+                end = i;
+                break;
+            }
+        }
+        (&r[..end], &r[end..])
+    };
+    let col = utils::col2num(col).unwrap();
+    let row = row.parse().unwrap();
+    (col, row)
 }
 
 #[derive(Debug)]
@@ -507,5 +644,22 @@ mod tests {
         assert_eq!(row2[3].value, ExcelValue::Number(0.0));
         let row3 = row_iter.next().unwrap();
         assert_eq!(row3[4].value, ExcelValue::String(Cow::Borrowed("Bit")));
+    }
+
+    #[test]
+    fn test_read_to_buffer() {
+        /* This spreadsheet has a combination of null values and missing cells to put the method
+         * through its paces */
+        let mut file = fs::File::open("./tests/data/7_nulls.xlsx").unwrap();
+        let mut buff = vec![];
+        file.read_to_end(&mut buff).unwrap();
+        let mut wb = Workbook::new(Cursor::new(buff)).unwrap();
+        let sheets = wb.sheets();
+        let ws = sheets.get(1).unwrap();
+        let byte_buffer = ws.read_to_buffer(&mut wb);
+        let byte_buffer_as_string = String::from_utf8(byte_buffer).unwrap();
+        let expected = ",0,1,2,3,4\n0,foo,0.4664743800292485,,0.9373419333844548,0.3870971408372121\n1,,0.6363620246706366,baz,foo,0.4664743800292485\n2,,0.08179075658393076,bar,,0.6363620246706366\n3,,0.9373419333844548,0.3870971408372121,,0.08179075658393076\n,baz,foo,0.4664743800292485,,0.9373419333844548\n5,bar,,0.6363620246706366,baz,foo\n6,0.3870971408372121,,0.08179075658393076,bar,\n";
+
+        assert_eq!(byte_buffer_as_string, expected);
     }
 }
