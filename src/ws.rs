@@ -177,6 +177,8 @@ impl Worksheet {
         let mut out_bytes: Vec<u8> = vec![];
         let mut sheet_reader = workbook.sheet_reader(&self.target);
         let reader = &mut sheet_reader.reader;
+        let styles = sheet_reader.styles;
+        let date_system = sheet_reader.date_system;
 
         // the xml in the xlsx file will not contain elements for empty rows. So
         // we need to "simulate" the empty rows since the user expects to see
@@ -189,6 +191,7 @@ impl Worksheet {
         let mut pushed = 0;
         let mut num_cols = 0;
         let mut is_start_row = true;
+        let mut cell_style = "".to_string();
 
         loop {
             let event = reader.read_event(&mut buf);
@@ -211,30 +214,55 @@ impl Worksheet {
                 // note: because v elements are children of c elements,
                 // need this check to go before the 'in_cell' check
                 Ok(Event::Text(ref e)) if in_value => {
+                    let raw_value = e.unescape_and_decode(reader).unwrap();
                     match &cell_type[..] {
                         "s" => {
-                            if let Ok(pos) = e.unescape_and_decode(reader).unwrap().parse::<usize>()
-                            {
+                            if let Ok(pos) = raw_value.parse::<usize>() {
                                 out_bytes.append(&mut strings[pos].clone().into_bytes());
                             } else {
-                                out_bytes.append(&mut e.to_vec());
+                                out_bytes.append(&mut e.escape_ascii().collect());
                             }
                         }
                         "str" | "inlineStr" => {
-                            out_bytes.append(&mut e.to_vec());
+                            out_bytes.append(&mut e.escape_ascii().collect());
+                        }
+                        _ if is_date(&cell_style) => {
+                            let num = raw_value.parse::<f64>().unwrap();
+                            let date_string = match utils::excel_number_to_date(num, date_system) {
+                                utils::DateConversion::Date(date) => date.to_string(),
+                                utils::DateConversion::DateTime(date) => {
+                                    date.format("%Y-%m-%d %H:%M:%S").to_string()
+                                }
+                                utils::DateConversion::Time(time) => {
+                                    time.format("%Y-%m-%d %H:%M:%S").to_string()
+                                }
+                                utils::DateConversion::Number(num) => {
+                                    format!("Invalid date {}", num)
+                                }
+                            };
+                            out_bytes.append(&mut date_string.into_bytes());
                         }
                         _ => {
-                            out_bytes.append(&mut e.to_vec());
+                            out_bytes.append(&mut e.escape_ascii().collect());
                         }
                     };
                 }
                 /* Matching start of cell */
                 Ok(Event::Start(ref e)) if e.name() == b"c" => {
+                    cell_style = "".to_string();
                     e.attributes().for_each(|a| {
                         let a = a.unwrap();
                         if a.key == b"t" {
                             cell_type = utils::attr_value(&a);
-                        } else if a.key == b"r" {
+                        }
+                        if a.key == b"s" {
+                            if let Ok(num) = utils::attr_value(&a).parse::<usize>() {
+                                if let Some(style) = styles.get(num) {
+                                    cell_style = style.to_string();
+                                }
+                            }
+                        }
+                        if a.key == b"r" {
                             let reference = utils::attr_value(&a);
                             let (new_col, _row) = coordinates(reference);
                             let diff = new_col - col - 1;
@@ -529,7 +557,7 @@ impl<'a> Iterator for RowIter<'a> {
                             }
                             "bl" => ExcelValue::None,
                             "e" => ExcelValue::Error(c.raw_value.to_string()),
-                            _ if is_date(&c) => {
+                            _ if is_date(&c.style) => {
                                 let num = c.raw_value.parse::<f64>().unwrap();
                                 match utils::excel_number_to_date(num, date_system) {
                                     utils::DateConversion::Date(date) => ExcelValue::Date(date),
@@ -611,14 +639,14 @@ impl<'a> Iterator for RowIter<'a> {
     }
 }
 
-fn is_date(cell: &Cell) -> bool {
-    let is_d = cell.style == "d";
-    let is_like_d_and_not_like_red = cell.style.contains('d') && !cell.style.contains("Red");
-    let is_like_m = cell.style.contains('m');
+fn is_date(style: &String) -> bool {
+    let is_d = style == "d";
+    let is_like_d_and_not_like_red = style.contains('d') && !style.contains("Red");
+    let is_like_m = style.contains('m');
     if is_d || is_like_d_and_not_like_red || is_like_m {
         true
     } else {
-        cell.style.contains('y')
+        style.contains('y')
     }
 }
 
@@ -659,6 +687,23 @@ mod tests {
         let byte_buffer = ws.read_to_buffer(&mut wb);
         let byte_buffer_as_string = String::from_utf8(byte_buffer).unwrap();
         let expected = ",0,1,2,3,4\n0,foo,0.4664743800292485,,0.9373419333844548,0.3870971408372121\n1,,0.6363620246706366,baz,foo,0.4664743800292485\n2,,0.08179075658393076,bar,,0.6363620246706366\n3,,0.9373419333844548,0.3870971408372121,,0.08179075658393076\n,baz,foo,0.4664743800292485,,0.9373419333844548\n5,bar,,0.6363620246706366,baz,foo\n6,0.3870971408372121,,0.08179075658393076,bar,\n";
+
+        assert_eq!(byte_buffer_as_string, expected);
+    }
+
+    #[test]
+    fn test_read_to_buffer_with_dates() {
+        /* This spreadsheet has a combination of null values and missing cells to put the method
+         * through its paces */
+        let mut file = fs::File::open("./tests/data/dates2.xlsx").unwrap();
+        let mut buff = vec![];
+        file.read_to_end(&mut buff).unwrap();
+        let mut wb = Workbook::new(Cursor::new(buff)).unwrap();
+        let sheets = wb.sheets();
+        let ws = sheets.get(1).unwrap();
+        let byte_buffer = ws.read_to_buffer(&mut wb);
+        let byte_buffer_as_string = String::from_utf8(byte_buffer).unwrap();
+        let expected = "Line,Date1,String1,String2,Date2,Float1,String3\n11,2022-03-13,S1_Line1,S2_Line1,2021-07-22,55401.4834901147,S3L1\n12,2022-05-06,S1_Line (2),S2_Line2,2021-09-14,59895.0195440879,S3L2\n13,2022-10-01,S1, Line3,S2_Line3,2022-02-09,73563.1850302802,S3L3\n14,2022-11-24,S1 \"Line 4\",S2_Line4,2022-04-04,81245.2187551785,S3L4\n15,2022-12-01,S1_Line5,S2_Line5,2022-04-11,82692.7459436702,S3L5\n17,2023-01-24,S1_Line6,S2_Line6,2022-06-04,98603.829483607406,S3L6\n17,2023-01-24,Ele \"Line 4\",test ws::tests::test_read_to_buffer_with_dates ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 24 filtered out; finished in 0.01s,2022-06-04,98603.829483607406,S3L6\n,,,,,,\n,,,,,,\n";
 
         assert_eq!(byte_buffer_as_string, expected);
     }
