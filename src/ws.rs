@@ -219,17 +219,29 @@ impl Worksheet {
                         "s" => {
                             if let Ok(pos) = raw_value.parse::<usize>() {
                                 out_bytes.push(b'"');
-                                out_bytes.append(&mut strings[pos].clone().into_bytes());
+                                out_bytes.append(&mut strings[pos]
+                                    .clone()
+                                    .into_bytes()
+                                    .iter()
+                                    .flat_map(|&byte| if byte == b'"' { vec![b'"', b'"'] } else { vec![byte] })
+                                    .collect());
                                 out_bytes.push(b'"');
                             } else {
                                 out_bytes.push(b'"');
-                                out_bytes.append(&mut e.escape_ascii().collect());
+                                out_bytes.append(&mut e
+                                    .escape_ascii()
+                                    .flat_map(|byte| if byte == b'"' { vec![b'"', b'"'] } else { vec![byte] })
+                                    .collect());
                                 out_bytes.push(b'"');
                             }
                         }
                         "str" | "inlineStr" => {
                             out_bytes.push(b'"');
-                            out_bytes.append(&mut e.escape_ascii().collect());
+                            out_bytes.append(&mut e
+                                    .escape_ascii()
+                                    .flat_map(|byte| if byte == b'"' { vec![b'"', b'"'] } else { vec![byte] })
+                                    .collect());
+
                             out_bytes.push(b'"');
                         }
                         _ if is_date(&cell_style) => {
@@ -712,7 +724,7 @@ mod tests {
         let byte_buffer = ws.read_to_buffer(&mut wb);
         let byte_buffer_as_string = String::from_utf8(byte_buffer).unwrap();
         println!("{:?}", byte_buffer_as_string);
-        let expected = "Line,Date1,String1,String2,Date2,Float1,String3\n11,2022-03-13,S1_Line1,S2_Line1,2021-07-22,55401.4834901147,S3L1\n12,2022-05-06,S1_Line (2),S2_Line2,2021-09-14,59895.0195440879,S3L2\n13,2022-10-01,S1, Line3,S2_Line3,2022-02-09,73563.1850302802,S3L3\n14,2022-11-24,S1 \"Line 4\",S2_Line4,2022-04-04,81245.2187551785,S3L4\n15,2022-12-01,S1_Line5,S2_Line5,2022-04-11,82692.7459436702,S3L5\n17,2023-01-24,S1_Line6,S2_Line6,2022-06-04,98603.829483607406,S3L6\n17,2023-01-24,Ele \"Line 4\",test ws::tests::test_read_to_buffer_with_dates ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 24 filtered out; finished in 0.01s,2022-06-04,98603.829483607406,S3L6\n,,,,,,\n,,,,,,\n";
+        let expected = "\"Line\",\"Date1\",\"String1\",\"String2\",\"Date2\",\"Float1\",\"String3\"\n\"11\",2022-03-13,\"S1_Line1\",\"S2_Line1\",2021-07-22,\"55401.4834901147\",\"S3L1\"\n\"12\",2022-05-06,\"S1_Line (2)\",\"S2_Line2\",2021-09-14,\"59895.0195440879\",\"S3L2\"\n\"13\",2022-10-01,\"S1, Line3\",\"S2_Line3\",2022-02-09,\"73563.1850302802\",\"S3L3\"\n\"14\",2022-11-24,\"S1 \"\"Line 4\"\"\",\"S2_Line4\",2022-04-04,\"81245.2187551785\",\"S3L4\"\n\"15\",2022-12-01,\"S1_Line5\",\"S2_Line5\",2022-04-11,\"82692.7459436702\",\"S3L5\"\n\"17\",2023-01-24,\"S1_Line6\",\"S2_Line6\",2022-06-04,\"98603.829483607406\",\"S3L6\"\n\"17\",2023-01-24,\"Ele \"\"Line 4\"\"\",\"test ws::tests::test_read_to_buffer_with_dates ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 24 filtered out; finished in 0.01s\",2022-06-04,\"98603.829483607406\",\"S3L6\"\n,,,,,,\n,,,,,,\n";
 
         assert_eq!(byte_buffer_as_string, expected);
     }
